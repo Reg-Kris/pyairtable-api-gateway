@@ -7,6 +7,7 @@ import os
 import sys
 import asyncio
 import json
+import uuid
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 
@@ -155,8 +156,38 @@ app.add_middleware(
     allow_origins=CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Trace-ID"],
 )
+
+# Custom middleware for distributed tracing
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request as StarletteRequest
+from starlette.responses import Response
+
+class DistributedTracingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: StarletteRequest, call_next):
+        # Generate or extract trace ID
+        trace_id = request.headers.get("X-Trace-ID") or str(uuid.uuid4())
+        
+        # Add trace ID to request state for use in handlers
+        request.state.trace_id = trace_id
+        
+        # Log request start with trace ID
+        logger.info(f"[TRACE:{trace_id}] Request started: {request.method} {request.url.path}")
+        
+        # Process request
+        response = await call_next(request)
+        
+        # Add trace ID to response headers
+        response.headers["X-Trace-ID"] = trace_id
+        
+        # Log request completion
+        logger.info(f"[TRACE:{trace_id}] Request completed: {response.status_code}")
+        
+        return response
+
+# Add distributed tracing middleware
+app.add_middleware(DistributedTracingMiddleware)
 
 # Add security middleware
 if SECURE_CONFIG_AVAILABLE:
@@ -348,6 +379,9 @@ async def chat_proxy(request: Request, x_api_key: Optional[str] = Header(None)):
     """Proxy chat requests to LLM Orchestrator with message format transformation"""
     verify_api_key(x_api_key)
     
+    # Get trace ID from request state
+    trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
+    
     try:
         # Get request body
         body = await request.json()
@@ -358,6 +392,8 @@ async def chat_proxy(request: Request, x_api_key: Optional[str] = Header(None)):
         session_id = transformed_body.get("session_id")
         enable_streaming = transformed_body.get("stream", False)
         
+        logger.info(f"[TRACE:{trace_id}] Forwarding chat request to LLM Orchestrator - session: {session_id}, streaming: {enable_streaming}")
+        
         # Use streaming if requested and session_id is provided
         if enable_streaming and session_id:
             return await service_integrations.handle_chat_stream(session_id, transformed_body)
@@ -366,37 +402,47 @@ async def chat_proxy(request: Request, x_api_key: Optional[str] = Header(None)):
             response = await http_client.post(
                 f"{LLM_ORCHESTRATOR_URL}/chat",
                 json=transformed_body,
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Trace-ID": trace_id
+                }
             )
             response.raise_for_status()
             return response.json()
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"LLM Orchestrator error: {e}")
+        logger.error(f"[TRACE:{trace_id}] LLM Orchestrator error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except ValueError as e:
-        logger.error(f"Chat request transformation error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Chat request transformation error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Chat proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Chat proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/tools")
-async def tools_proxy(x_api_key: Optional[str] = Header(None)):
+async def tools_proxy(request: Request, x_api_key: Optional[str] = Header(None)):
     """Proxy tools requests to LLM Orchestrator"""
     verify_api_key(x_api_key)
     
+    # Get trace ID from request state
+    trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
+    
     try:
-        response = await http_client.get(f"{LLM_ORCHESTRATOR_URL}/tools")
+        logger.info(f"[TRACE:{trace_id}] Forwarding tools request to LLM Orchestrator")
+        response = await http_client.get(
+            f"{LLM_ORCHESTRATOR_URL}/tools",
+            headers={"X-Trace-ID": trace_id}
+        )
         response.raise_for_status()
         return response.json()
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"Tools proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Tools proxy error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
-        logger.error(f"Tools proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Tools proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -409,6 +455,9 @@ async def airtable_proxy(
     """Proxy Airtable requests to Airtable Gateway"""
     verify_api_key(x_api_key)
     
+    # Get trace ID from request state
+    trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
+    
     try:
         # Build target URL
         target_url = f"{AIRTABLE_GATEWAY_URL}/{path}"
@@ -418,23 +467,28 @@ async def airtable_proxy(
         if request.method in ["POST", "PATCH", "PUT"]:
             body = await request.json()
         
+        logger.info(f"[TRACE:{trace_id}] Forwarding Airtable request to Gateway - {request.method} /{path}")
+        
         # Forward request
         response = await http_client.request(
             method=request.method,
             url=target_url,
             json=body,
             params=dict(request.query_params),
-            headers={"X-API-Key": API_KEY}  # Use gateway's API key
+            headers={
+                "X-API-Key": API_KEY,  # Use gateway's API key
+                "X-Trace-ID": trace_id
+            }
         )
         response.raise_for_status()
         
         return response.json()
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"Airtable Gateway error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Airtable Gateway error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
-        logger.error(f"Airtable proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Airtable proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -443,10 +497,15 @@ async def execute_tool_proxy(request: Request, x_api_key: Optional[str] = Header
     """Proxy tool execution with progress updates"""
     verify_api_key(x_api_key)
     
+    # Get trace ID from request state
+    trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
+    
     try:
         body = await request.json()
         session_id = body.get("session_id")
         enable_progress = body.get("stream_progress", False)
+        
+        logger.info(f"[TRACE:{trace_id}] Forwarding tool execution to LLM Orchestrator - session: {session_id}, progress: {enable_progress}")
         
         # Use progress streaming if requested and session_id is provided
         if enable_progress and session_id:
@@ -456,52 +515,69 @@ async def execute_tool_proxy(request: Request, x_api_key: Optional[str] = Header
             response = await http_client.post(
                 f"{LLM_ORCHESTRATOR_URL}/execute-tool",
                 json=body,
-                headers={"Content-Type": "application/json"}
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Trace-ID": trace_id
+                }
             )
             response.raise_for_status()
             return response.json()
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"Tool execution proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Tool execution proxy error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
-        logger.error(f"Tool execution proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Tool execution proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/sessions/{session_id}/history")
-async def session_history_proxy(session_id: str, x_api_key: Optional[str] = Header(None)):
+async def session_history_proxy(session_id: str, request: Request, x_api_key: Optional[str] = Header(None)):
     """Proxy session history requests"""
     verify_api_key(x_api_key)
     
+    # Get trace ID from request state
+    trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
+    
     try:
-        response = await http_client.get(f"{LLM_ORCHESTRATOR_URL}/sessions/{session_id}/history")
+        logger.info(f"[TRACE:{trace_id}] Forwarding session history request for session: {session_id}")
+        response = await http_client.get(
+            f"{LLM_ORCHESTRATOR_URL}/sessions/{session_id}/history",
+            headers={"X-Trace-ID": trace_id}
+        )
         response.raise_for_status()
         return response.json()
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"Session history proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Session history proxy error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
-        logger.error(f"Session history proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Session history proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/sessions/{session_id}")
-async def clear_session_proxy(session_id: str, x_api_key: Optional[str] = Header(None)):
+async def clear_session_proxy(session_id: str, request: Request, x_api_key: Optional[str] = Header(None)):
     """Proxy clear session requests"""
     verify_api_key(x_api_key)
     
+    # Get trace ID from request state
+    trace_id = getattr(request.state, 'trace_id', str(uuid.uuid4()))
+    
     try:
-        response = await http_client.delete(f"{LLM_ORCHESTRATOR_URL}/sessions/{session_id}")
+        logger.info(f"[TRACE:{trace_id}] Forwarding clear session request for session: {session_id}")
+        response = await http_client.delete(
+            f"{LLM_ORCHESTRATOR_URL}/sessions/{session_id}",
+            headers={"X-Trace-ID": trace_id}
+        )
         response.raise_for_status()
         return response.json()
         
     except httpx.HTTPStatusError as e:
-        logger.error(f"Clear session proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Clear session proxy error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
     except Exception as e:
-        logger.error(f"Clear session proxy error: {e}")
+        logger.error(f"[TRACE:{trace_id}] Clear session proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
