@@ -4,6 +4,7 @@ Simple routing service for PyAirtable microservices
 """
 
 import os
+import sys
 import asyncio
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
@@ -22,12 +23,50 @@ load_dotenv()
 logging.basicConfig(level=getattr(logging, os.getenv("LOG_LEVEL", "INFO")))
 logger = logging.getLogger(__name__)
 
+# Secure configuration and middleware imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../pyairtable-common'))
+
+try:
+    from pyairtable_common.config import initialize_secrets, get_secret, close_secrets, ConfigurationError
+    from pyairtable_common.middleware import setup_security_middleware, verify_api_key_secure
+    SECURE_CONFIG_AVAILABLE = True
+except ImportError as e:
+    logger.warning(f"⚠️ Secure configuration not available: {e}")
+    SECURE_CONFIG_AVAILABLE = False
+    # Fallback security functions
+    def verify_api_key_secure(provided, expected):
+        return provided == expected
+
 # Configuration
 AIRTABLE_GATEWAY_URL = os.getenv("AIRTABLE_GATEWAY_URL", "http://localhost:8002")
 MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8001")
 LLM_ORCHESTRATOR_URL = os.getenv("LLM_ORCHESTRATOR_URL", "http://localhost:8003")
-API_KEY = os.getenv("API_KEY", "simple-api-key")
-CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
+
+# Initialize secure configuration
+config_manager = None
+if SECURE_CONFIG_AVAILABLE:
+    try:
+        config_manager = initialize_secrets()
+        logger.info("✅ Secure configuration manager initialized")
+    except Exception as e:
+        logger.error(f"💥 Failed to initialize secure configuration: {e}")
+        raise
+
+# Get API key from secure manager or fallback to environment
+API_KEY = None
+if config_manager:
+    try:
+        API_KEY = get_secret("API_KEY")
+    except Exception as e:
+        logger.error(f"💥 Failed to get API_KEY from secure config: {e}")
+        raise ValueError("API_KEY could not be retrieved from secure configuration")
+else:
+    API_KEY = os.getenv("API_KEY")
+    if not API_KEY:
+        logger.error("💥 CRITICAL: API_KEY environment variable is required")
+        raise ValueError("API_KEY environment variable is required")
+# SECURITY: Replace wildcard with specific origins
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000").split(",")
 HEALTH_CHECK_TIMEOUT = int(os.getenv("HEALTH_CHECK_TIMEOUT", "5"))
 
 # HTTP client for service communication
@@ -45,6 +84,9 @@ async def lifespan(app: FastAPI):
     yield
     # Shutdown
     await http_client.aclose()
+    if config_manager:
+        await close_secrets()
+        logger.info("Closed secure configuration manager")
     logger.info("Shutting down PyAirtable API Gateway...")
 
 
@@ -56,19 +98,23 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware with security hardening
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
 )
+
+# Add security middleware
+if SECURE_CONFIG_AVAILABLE:
+    setup_security_middleware(app, rate_limit_calls=1000, rate_limit_period=60)
 
 
 def verify_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
-    """Simple API key verification"""
-    if x_api_key != API_KEY:
+    """Secure API key verification with constant-time comparison"""
+    if not verify_api_key_secure(x_api_key or "", API_KEY or ""):
         raise HTTPException(status_code=401, detail="Invalid API key")
     return True
 
