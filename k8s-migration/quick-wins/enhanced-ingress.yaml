@@ -1,0 +1,173 @@
+# Enhanced Ingress for PyAirtable - Immediate port-forwarding solution
+# This replaces the need for multiple kubectl port-forward commands
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pyairtable-enhanced-ingress
+  namespace: pyairtable
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    # Enable WebSocket support for real-time features
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/websocket-services: "llm-orchestrator,airtable-gateway"
+spec:
+  ingressClassName: nginx
+  rules:
+  # Main API Gateway access
+  - host: pyairtable.local
+    http:
+      paths:
+      - path: /api/v1
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 8000
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend
+            port:
+              number: 3000
+  
+  # Individual service access for development and debugging
+  - host: api.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: api-gateway
+            port:
+              number: 8000
+
+  - host: mcp.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: mcp-server
+            port:
+              number: 8001
+
+  - host: airtable.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: airtable-gateway
+            port:
+              number: 8002
+
+  - host: llm.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: llm-orchestrator
+            port:
+              number: 8003
+
+  - host: platform.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: platform-services
+            port:
+              number: 8007
+
+  - host: automation.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: automation-services
+            port:
+              number: 8006
+
+  # Database access (for development tools)
+  - host: db.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: postgres
+            port:
+              number: 5432
+
+  - host: redis.pyairtable.local
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: redis
+            port:
+              number: 6379
+---
+# ConfigMap for local DNS setup script
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: local-dns-setup
+  namespace: pyairtable
+data:
+  setup-local-dns.sh: |
+    #!/bin/bash
+    # Quick DNS setup for PyAirtable local development
+    
+    # Get minikube IP
+    MINIKUBE_IP=$(minikube ip)
+    
+    echo "Setting up local DNS entries for PyAirtable..."
+    echo "Minikube IP: $MINIKUBE_IP"
+    
+    # Backup existing hosts file
+    sudo cp /etc/hosts /etc/hosts.backup.pyairtable.$(date +%Y%m%d_%H%M%S)
+    
+    # Remove existing pyairtable.local entries
+    sudo sed -i '' '/pyairtable\.local/d' /etc/hosts
+    
+    # Add new entries
+    echo "# PyAirtable Local Development - Quick Win Solution" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP api.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP mcp.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP airtable.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP llm.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP platform.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP automation.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP db.pyairtable.local" | sudo tee -a /etc/hosts
+    echo "$MINIKUBE_IP redis.pyairtable.local" | sudo tee -a /etc/hosts
+    
+    echo ""
+    echo "DNS setup complete! You can now access:"
+    echo "- Main App: http://pyairtable.local"
+    echo "- API Gateway: http://api.pyairtable.local"
+    echo "- MCP Server: http://mcp.pyairtable.local"
+    echo "- Airtable Gateway: http://airtable.pyairtable.local"
+    echo "- LLM Orchestrator: http://llm.pyairtable.local"
+    echo "- Platform Services: http://platform.pyairtable.local"
+    echo "- Automation Services: http://automation.pyairtable.local"
+    echo ""
+    echo "No more port-forwarding needed!"

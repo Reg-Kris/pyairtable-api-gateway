@@ -1,0 +1,252 @@
+# Istio Gateway Configuration for PyAirtable
+# Adapted from the network engineer's design for PyAirtable services
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: pyairtable-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*.pyairtable.local"
+    - "pyairtable.local"
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: pyairtable-local-tls
+    hosts:
+    - "*.pyairtable.local"
+    - "pyairtable.local"
+---
+# Virtual Service for PyAirtable API Gateway
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: pyairtable-api-gateway-vs
+  namespace: pyairtable
+spec:
+  hosts:
+  - "pyairtable.local"
+  - "api.pyairtable.local"
+  gateways:
+  - istio-system/pyairtable-gateway
+  http:
+  # Route API calls to api-gateway
+  - match:
+    - uri:
+        prefix: "/api/"
+    route:
+    - destination:
+        host: api-gateway
+        port:
+          number: 8000
+  # Route WebSocket connections for real-time features
+  - match:
+    - uri:
+        prefix: "/ws/"
+    - headers:
+        upgrade:
+          exact: websocket
+    route:
+    - destination:
+        host: llm-orchestrator
+        port:
+          number: 8003
+  # Default route to frontend
+  - route:
+    - destination:
+        host: frontend
+        port:
+          number: 3000
+---
+# Virtual Service for individual PyAirtable services
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: pyairtable-services-vs
+  namespace: pyairtable
+spec:
+  hosts:
+  - "mcp.pyairtable.local"
+  - "airtable.pyairtable.local"
+  - "llm.pyairtable.local"
+  - "platform.pyairtable.local"
+  - "automation.pyairtable.local"
+  gateways:
+  - istio-system/pyairtable-gateway
+  http:
+  # MCP Server
+  - match:
+    - headers:
+        ":authority":
+          exact: "mcp.pyairtable.local"
+    route:
+    - destination:
+        host: mcp-server
+        port:
+          number: 8001
+  # Airtable Gateway
+  - match:
+    - headers:
+        ":authority":
+          exact: "airtable.pyairtable.local"
+    route:
+    - destination:
+        host: airtable-gateway
+        port:
+          number: 8002
+  # LLM Orchestrator
+  - match:
+    - headers:
+        ":authority":
+          exact: "llm.pyairtable.local"
+    route:
+    - destination:
+        host: llm-orchestrator
+        port:
+          number: 8003
+  # Platform Services
+  - match:
+    - headers:
+        ":authority":
+          exact: "platform.pyairtable.local"
+    route:
+    - destination:
+        host: platform-services
+        port:
+          number: 8007
+  # Automation Services
+  - match:
+    - headers:
+        ":authority":
+          exact: "automation.pyairtable.local"
+    route:
+    - destination:
+        host: automation-services
+        port:
+          number: 8006
+---
+# Destination Rules for PyAirtable services to enable mTLS
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: pyairtable-services-dr
+  namespace: pyairtable
+spec:
+  host: "*.pyairtable.svc.cluster.local"
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+  exportTo:
+  - "."
+---
+# Individual Destination Rules for each service
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: api-gateway-dr
+  namespace: pyairtable
+spec:
+  host: api-gateway
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 100
+        h2MaxRequests: 1000
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: mcp-server-dr
+  namespace: pyairtable
+spec:
+  host: mcp-server
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: airtable-gateway-dr
+  namespace: pyairtable
+spec:
+  host: airtable-gateway
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: llm-orchestrator-dr
+  namespace: pyairtable
+spec:
+  host: llm-orchestrator
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 50
+        # Enable WebSocket support
+        http1MaxPendingRequests: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: platform-services-dr
+  namespace: pyairtable
+spec:
+  host: platform-services
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 100
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: automation-services-dr
+  namespace: pyairtable
+spec:
+  host: automation-services
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 50
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: frontend-dr
+  namespace: pyairtable
+spec:
+  host: frontend
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+    connectionPool:
+      http:
+        maxRequestsPerConnection: 200

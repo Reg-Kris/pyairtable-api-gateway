@@ -294,25 +294,78 @@ async def health_check():
     }
 
 
+def transform_chat_request(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform frontend chat request format to LLM Orchestrator format.
+    
+    Frontend sends: {"messages": [{"role": "user", "content": "Hello"}], "session_id": "test"}
+    LLM Orchestrator expects: {"message": "Hello", "session_id": "test"}
+    
+    Args:
+        body: Request body from frontend
+        
+    Returns:
+        Transformed request body for LLM Orchestrator
+        
+    Raises:
+        ValueError: If messages array is empty or no user messages found
+    """
+    # Check if messages array exists
+    messages = body.get("messages", [])
+    if not messages:
+        raise ValueError("Empty messages array - at least one message is required")
+    
+    # Find the last user message
+    last_user_message = None
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            last_user_message = message
+            break
+    
+    if not last_user_message:
+        raise ValueError("No user messages found in messages array")
+    
+    # Extract the content
+    message_content = last_user_message.get("content", "")
+    if not message_content:
+        raise ValueError("User message content is empty")
+    
+    # Create transformed body
+    transformed_body = {
+        "message": message_content
+    }
+    
+    # Copy other fields (session_id, base_id, thinking_budget, stream, etc.)
+    for key, value in body.items():
+        if key != "messages":  # Skip the original messages array
+            transformed_body[key] = value
+    
+    return transformed_body
+
+
 @app.post("/api/chat")
 async def chat_proxy(request: Request, x_api_key: Optional[str] = Header(None)):
-    """Proxy chat requests to LLM Orchestrator with optional streaming"""
+    """Proxy chat requests to LLM Orchestrator with message format transformation"""
     verify_api_key(x_api_key)
     
     try:
         # Get request body
         body = await request.json()
-        session_id = body.get("session_id")
-        enable_streaming = body.get("stream", False)
+        
+        # Transform messages array to single message format
+        transformed_body = transform_chat_request(body)
+        
+        session_id = transformed_body.get("session_id")
+        enable_streaming = transformed_body.get("stream", False)
         
         # Use streaming if requested and session_id is provided
         if enable_streaming and session_id:
-            return await service_integrations.handle_chat_stream(session_id, body)
+            return await service_integrations.handle_chat_stream(session_id, transformed_body)
         else:
             # Standard non-streaming request
             response = await http_client.post(
                 f"{LLM_ORCHESTRATOR_URL}/chat",
-                json=body,
+                json=transformed_body,
                 headers={"Content-Type": "application/json"}
             )
             response.raise_for_status()
@@ -321,6 +374,9 @@ async def chat_proxy(request: Request, x_api_key: Optional[str] = Header(None)):
     except httpx.HTTPStatusError as e:
         logger.error(f"LLM Orchestrator error: {e}")
         raise HTTPException(status_code=e.response.status_code, detail=str(e))
+    except ValueError as e:
+        logger.error(f"Chat request transformation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Chat proxy error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

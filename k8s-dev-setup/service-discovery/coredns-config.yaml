@@ -1,0 +1,58 @@
+# CoreDNS configuration for local development
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  Corefile: |
+    .:53 {
+        errors
+        health {
+            lameduck 5s
+        }
+        ready
+        kubernetes cluster.local in-addr.arpa ip6.arpa {
+            pods insecure
+            fallthrough in-addr.arpa ip6.arpa
+            ttl 30
+        }
+        # Custom domain for local development
+        dev.local:53 {
+            kubernetes cluster.local in-addr.arpa ip6.arpa {
+                pods insecure
+                fallthrough in-addr.arpa ip6.arpa
+                ttl 30
+            }
+            # Forward to system DNS for external queries
+            forward . /etc/resolv.conf {
+                max_concurrent 1000
+            }
+        }
+        prometheus :9153
+        forward . /etc/resolv.conf {
+            max_concurrent 1000
+        }
+        cache 30
+        loop
+        reload
+        loadbalance
+    }
+---
+# Service to expose CoreDNS internally
+apiVersion: v1
+kind: Service
+metadata:
+  name: coredns-dev
+  namespace: kube-system
+spec:
+  selector:
+    k8s-app: kube-dns
+  ports:
+  - port: 53
+    protocol: UDP
+    name: dns-udp
+  - port: 53
+    protocol: TCP
+    name: dns-tcp
+  type: ClusterIP

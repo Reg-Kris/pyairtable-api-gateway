@@ -1,0 +1,180 @@
+# Istio Gateway for local development
+# Provides single entry point for all services
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: dev-gateway
+  namespace: istio-system
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*.dev.local"
+    - "api.dev.local"
+  - port:
+      number: 443
+      name: https
+      protocol: HTTPS
+    tls:
+      mode: SIMPLE
+      credentialName: dev-local-tls
+    hosts:
+    - "*.dev.local"
+    - "api.dev.local"
+---
+# Virtual Service for API Gateway
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: api-gateway-vs
+  namespace: default
+spec:
+  hosts:
+  - "api.dev.local"
+  gateways:
+  - istio-system/dev-gateway
+  http:
+  - match:
+    - uri:
+        prefix: "/auth/"
+    route:
+    - destination:
+        host: auth-service
+        port:
+          number: 8080
+  - match:
+    - uri:
+        prefix: "/users/"
+    route:
+    - destination:
+        host: user-service
+        port:
+          number: 8080
+  - match:
+    - uri:
+        prefix: "/orders/"
+    route:
+    - destination:
+        host: order-service
+        port:
+          number: 8080
+  - match:
+    - uri:
+        prefix: "/inventory/"
+    route:
+    - destination:
+        host: inventory-service
+        port:
+          number: 8080
+  - route:
+    - destination:
+        host: api-gateway
+        port:
+          number: 8080
+---
+# Individual service virtual services
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: microservices-vs
+  namespace: default
+spec:
+  hosts:
+  - "auth.dev.local"
+  - "users.dev.local"
+  - "orders.dev.local"
+  - "inventory.dev.local"
+  - "notifications.dev.local"
+  - "analytics.dev.local"
+  - "payments.dev.local"
+  - "catalog.dev.local"
+  - "search.dev.local"
+  gateways:
+  - istio-system/dev-gateway
+  http:
+  - match:
+    - headers:
+        ":authority":
+          exact: "auth.dev.local"
+    route:
+    - destination:
+        host: auth-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "users.dev.local"
+    route:
+    - destination:
+        host: user-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "orders.dev.local"
+    route:
+    - destination:
+        host: order-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "inventory.dev.local"
+    route:
+    - destination:
+        host: inventory-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "notifications.dev.local"
+    route:
+    - destination:
+        host: notification-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "analytics.dev.local"
+    route:
+    - destination:
+        host: analytics-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "payments.dev.local"
+    route:
+    - destination:
+        host: payment-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "catalog.dev.local"
+    route:
+    - destination:
+        host: catalog-service
+        port:
+          number: 8080
+  - match:
+    - headers:
+        ":authority":
+          exact: "search.dev.local"
+    route:
+    - destination:
+        host: search-service
+        port:
+          number: 8080

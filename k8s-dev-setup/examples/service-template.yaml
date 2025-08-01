@@ -1,0 +1,136 @@
+# Template for microservice deployment with full security integration
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: REPLACE_SERVICE_NAME
+  namespace: default
+  labels:
+    app: REPLACE_SERVICE_NAME
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: REPLACE_SERVICE_NAME
+  namespace: default
+  labels:
+    app: REPLACE_SERVICE_NAME
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: REPLACE_SERVICE_NAME
+  template:
+    metadata:
+      labels:
+        app: REPLACE_SERVICE_NAME
+      annotations:
+        sidecar.istio.io/inject: "true"
+        # SPIFFE identity will be automatically assigned
+    spec:
+      serviceAccountName: REPLACE_SERVICE_NAME
+      containers:
+      - name: REPLACE_SERVICE_NAME
+        image: REPLACE_IMAGE_NAME
+        ports:
+        - containerPort: 8080
+          name: http
+        env:
+        - name: SERVICE_NAME
+          value: "REPLACE_SERVICE_NAME"
+        - name: SPIFFE_ENDPOINT_SOCKET
+          value: "unix:///run/spire/sockets/agent.sock"
+        - name: TRUST_DOMAIN
+          value: "dev.local"
+        # JWT configuration for external authentication
+        - name: JWT_ISSUER
+          value: "https://auth.dev.local"
+        - name: JWT_AUDIENCE
+          value: "dev.local"
+        # Service discovery endpoints
+        - name: AUTH_SERVICE_URL
+          value: "https://auth-service:8080"
+        - name: USER_SERVICE_URL
+          value: "https://user-service:8080"
+        - name: ORDER_SERVICE_URL
+          value: "https://order-service:8080"
+        volumeMounts:
+        - name: spire-agent-socket
+          mountPath: /run/spire/sockets
+          readOnly: true
+        # Health checks
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+        # Resource limits
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+      volumes:
+      - name: spire-agent-socket
+        hostPath:
+          path: /run/spire/sockets
+          type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: REPLACE_SERVICE_NAME
+  namespace: default
+  labels:
+    app: REPLACE_SERVICE_NAME
+spec:
+  selector:
+    app: REPLACE_SERVICE_NAME
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  type: ClusterIP
+---
+# Service-specific network policy
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: REPLACE_SERVICE_NAME-netpol
+  namespace: default
+spec:
+  podSelector:
+    matchLabels:
+      app: REPLACE_SERVICE_NAME
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+    - podSelector:
+        matchLabels:
+          app: istio-proxy
+    - podSelector: {}  # Allow from same namespace
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  - to:
+    - podSelector: {}  # Allow to same namespace
+  - to: []  # Allow DNS resolution
+    ports:
+    - protocol: UDP
+      port: 53

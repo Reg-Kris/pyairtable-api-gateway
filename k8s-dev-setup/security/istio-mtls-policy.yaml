@@ -1,0 +1,115 @@
+# Istio mTLS and Authorization Policies
+# Enables automatic mTLS between all services
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: default
+spec:
+  mtls:
+    mode: STRICT
+---
+# Allow traffic within the default namespace
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-intra-namespace
+  namespace: default
+spec:
+  rules:
+  - from:
+    - source:
+        namespaces: ["default"]
+  - from:
+    - source:
+        namespaces: ["istio-system"]
+---
+# Service-specific authorization policies
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: auth-service-policy
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: auth-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/api-gateway"]
+        # Allow API gateway to call auth service
+  - to:
+    - operation:
+        methods: ["POST"]
+        paths: ["/auth/login", "/auth/validate", "/auth/refresh"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: user-service-policy
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: user-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/api-gateway"]
+    - source:
+        principals: ["cluster.local/ns/default/sa/auth-service"]
+  - when:
+    - key: custom.auth_validated
+      values: ["true"]
+---
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: order-service-policy
+  namespace: default
+spec:
+  selector:
+    matchLabels:
+      app: order-service
+  rules:
+  - from:
+    - source:
+        principals: ["cluster.local/ns/default/sa/api-gateway"]
+    - source:
+        principals: ["cluster.local/ns/default/sa/user-service"]
+    - source:
+        principals: ["cluster.local/ns/default/sa/inventory-service"]
+  - when:
+    - key: custom.auth_validated
+      values: ["true"]
+---
+# Request Authentication using JWT
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: jwt-auth
+  namespace: default
+spec:
+  jwtRules:
+  - issuer: "https://auth.dev.local"
+    jwksUri: "https://auth.dev.local/.well-known/jwks.json"
+    audiences:
+    - "dev.local"
+---
+# Require JWT for protected endpoints
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt
+  namespace: default
+spec:
+  rules:
+  - when:
+    - key: request.url_path
+      values: ["/api/*"]
+    - key: request.headers[authorization]
+      notValues: [""]
+  - from:
+    - source:
+        requestPrincipals: ["https://auth.dev.local/user"]

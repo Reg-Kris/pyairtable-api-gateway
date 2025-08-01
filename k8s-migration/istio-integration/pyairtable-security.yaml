@@ -1,0 +1,159 @@
+# Security Configuration for PyAirtable with Istio
+# Simplified version of the network engineer's SPIRE setup
+
+# Authorization Policy for PyAirtable services
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: pyairtable-services-authz
+  namespace: pyairtable
+spec:
+  # Apply to all services in the namespace
+  rules:
+  # Allow ingress gateway to access all services
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+  # Allow inter-service communication within PyAirtable namespace
+  - from:
+    - source:
+        namespaces: ["pyairtable"]
+  # Allow health checks from Kubernetes
+  - to:
+    - operation:
+        paths: ["/health", "/ready", "/healthz"]
+---
+# PeerAuthentication to enable mTLS for all services
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: pyairtable-mtls
+  namespace: pyairtable
+spec:
+  # Apply to all services in namespace
+  mtls:
+    mode: STRICT
+---
+# Specific authorization for API Gateway (main entry point)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: api-gateway-authz
+  namespace: pyairtable
+spec:
+  selector:
+    matchLabels:
+      app: api-gateway
+  rules:
+  # Allow all traffic to API gateway (it will handle auth)
+  - {}
+---
+# Authorization for MCP Server (limited access)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: mcp-server-authz
+  namespace: pyairtable
+spec:
+  selector:
+    matchLabels:
+      app: mcp-server
+  rules:
+  # Only allow API Gateway and LLM Orchestrator to access MCP
+  - from:
+    - source:
+        principals: ["cluster.local/ns/pyairtable/sa/api-gateway"]
+    - source:
+        principals: ["cluster.local/ns/pyairtable/sa/llm-orchestrator"]
+  # Allow ingress for development
+  - from:
+    - source:
+        principals: ["cluster.local/ns/istio-system/sa/istio-ingressgateway-service-account"]
+---
+# Authorization for database access (restricted)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: postgres-authz
+  namespace: pyairtable
+spec:
+  selector:
+    matchLabels:
+      app: postgres
+  rules:
+  # Only specific services can access database
+  - from:
+    - source:
+        principals: 
+        - "cluster.local/ns/pyairtable/sa/api-gateway"
+        - "cluster.local/ns/pyairtable/sa/airtable-gateway"
+        - "cluster.local/ns/pyairtable/sa/platform-services"
+        - "cluster.local/ns/pyairtable/sa/automation-services"
+---
+# Authorization for Redis (cache access)
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: redis-authz
+  namespace: pyairtable
+spec:
+  selector:
+    matchLabels:
+      app: redis
+  rules:
+  # Allow specific services to access Redis
+  - from:
+    - source:
+        principals: 
+        - "cluster.local/ns/pyairtable/sa/api-gateway"
+        - "cluster.local/ns/pyairtable/sa/llm-orchestrator"
+        - "cluster.local/ns/pyairtable/sa/platform-services"
+---
+# Network Policy for additional security (optional)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: pyairtable-network-policy
+  namespace: pyairtable
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # Allow ingress from istio-system (ingress gateway)
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # Allow ingress within pyairtable namespace
+  - from:
+    - namespaceSelector:
+        matchLabels:
+          name: pyairtable
+  egress:
+  # Allow egress to same namespace
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: pyairtable
+  # Allow egress to istio-system for telemetry
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: istio-system
+  # Allow DNS resolution
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          name: kube-system
+    ports:
+    - protocol: UDP
+      port: 53
+  # Allow external HTTPS for Airtable API
+  - to: []
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
